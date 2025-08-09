@@ -3,10 +3,14 @@ import sqlite3
 import tkinter as tk
 import logging
 from tkinter import messagebox as mb
+
+import pyodbc
 from Crypto.Random import get_random_bytes
 from base64 import b64encode
 from Crypto.Cipher import AES
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 
 # Logging configurations
 logging.basicConfig(filename='activity.log',
@@ -19,37 +23,55 @@ console.setLevel(logging.INFO)
 # add the handler to the root logger
 logging.getLogger('').addHandler(console)
 
+# Activate '.env' file
+load_dotenv()
+load_dotenv(verbose=True)
+env_path = Path('.') / '.env'
+load_dotenv(dotenv_path=env_path)
+
 
 # Function to insert a username, password, and key value into the local database when the user enters in a username
 # and password values in their respected entry boxes and hits the 'Submit' button.
-def insert_variable_into_table(username, password, key, result):
+def insert_variable_into_table(user, password, key, result):
     success = True
+    conn = None
     try:
         # Make a connection to the local db
-        path = os.path.dirname(os.path.abspath(__file__))
-        db_file = os.path.join(path, 'users.db')
-        sqlite_connection = sqlite3.connect(db_file)
-        cursor = sqlite_connection.cursor()
+        # Connect to SQL Server using SQL authentication
+        server = os.getenv("server")
+        database = os.getenv("database")
+        username = os.getenv("username")
+        password = os.getenv("password")
+
+        conn = pyodbc.connect(
+            f'DRIVER={{SQL Server}};SERVER={server};DATABASE={database};UID={username};PWD={password};Trusted_Connection=yes;autocommit=True;')
+        cursor = conn.cursor()
         logging.info("Connected to SQLite")
 
-        # SQL Insert query
-        sqlite_insert_with_param = """INSERT INTO users (Username, Password, Key, RESULT) VALUES (?, ?, ?, ?);"""
-        data = (username, password, key, result)
-        # Run the Insert query
-        cursor.execute(sqlite_insert_with_param, data)
-        sqlite_connection.commit()
-        logging.info("Python Variables inserted successfully into SqliteDb_developers table")
+        # SQL Server Insert query
+        sql_insert_query = """
+        INSERT INTO users (Username, Password, [Key], RESULT)
+        VALUES (?, CONVERT(VARBINARY(MAX), ?), CONVERT(VARBINARY(MAX), ?), ?);
+        """
+        data = (user, password, key, result)
+
+        # Execute and commit
+        cursor.execute(sql_insert_query, data)
+        conn.commit()
+        logging.info("Python variables inserted successfully into SQL Server table")
+
         cursor.close()
         return success
-    except sqlite3.Error as error:
+
+    except pyodbc.Error as error:
         success = False
-        logging.error("Failed to insert Python variable into sqlite table", error)
-        mb.showerror('Failed', 'Failed to insert Python variable into sqlite table')
+        logging.error("Failed to insert Python variable into SQL Server table", exc_info=True)
+        mb.showerror('Failed', 'Failed to insert Python variable into SQL Server table')
         return success
     finally:
-        if (sqlite_connection):  # Close the local db connection
-            sqlite_connection.close()
-            logging.info("The SQLite connection is closed")
+        if conn:
+            conn.close()
+            logging.info("SQL Server connection closed")
 
 
 # Function to check if the Username field is blank
@@ -91,40 +113,41 @@ def set_data_to_db():
     try:
         # Generate the key
         key = get_random_bytes(32)
+
+        # Check if username and password fields are empty
         success_check = user_pass_check_empty()
         if not success_check:
             success = False
         else:
-            user = UE.get()
-            user = user.casefold()
+            # Get and normalize user input
+            user = UE.get().casefold()
             pw = PE.get()
 
-            # === Encrypt ===
-            # First make your data a bytes object. To convert a string to a bytes object, we can call .encode() on it
+            # === Encrypt password ===
+            # Encrypt password
             pw_data = pw.encode('utf-8')
-
-            # Create the cipher object and encrypt the data
             cipher_encrypt = AES.new(key, AES.MODE_CFB)
             ct_bytes = cipher_encrypt.encrypt(pw_data)
             iv = b64encode(cipher_encrypt.iv).decode('utf-8')
-            ct = b64encode(ct_bytes).decode('utf-8')
+            ct = b64encode(ct_bytes).decode('utf-8')  # This is your encrypted password as a string
             result = json.dumps({'iv': iv, 'ciphertext': ct})
+            # Use ct directly — it's already a string
+            ciphered_data = ct
             print(result)
-            # This is now our data
-            ciphered_data = ct_bytes
-            insert_variable_into_table(user, ciphered_data, key, result)
-            # TO DO: Validation if the insert_variable_into_table hit an error or not
-            success = True
 
-        # Clears out the username and password entry boxes
+            # Insert encrypted data into SQL Server
+            success = insert_variable_into_table(user, ciphered_data, key, result)
+
+        # Clear input fields
         UE.delete(0, tk.END)
         PE.delete(0, tk.END)
 
-        # Successful pop up message
+        # Show success message
         if success:
             mb.showinfo('Success', 'Data Successfully Saved')
+
     except Exception as e:
-        logging.error("Something went wrong!", e)
+        logging.error("Something went wrong!", exc_info=True)
         mb.showerror('Failed', 'Something went wrong!')
 
 

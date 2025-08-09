@@ -1,11 +1,15 @@
 import logging
 import json
 import sqlite3
+from pathlib import Path
+
+import pyodbc
 import sys
 import pyperclip
 from base64 import b64decode
 from Crypto.Cipher import AES
 import os
+from dotenv import load_dotenv
 
 # Logging configurations
 logging.basicConfig(filename='activity.log',
@@ -18,54 +22,54 @@ console.setLevel(logging.INFO)
 # add the handler to the root logger
 logging.getLogger('').addHandler(console)
 
+# Activate '.env' file
+load_dotenv()
+load_dotenv(verbose=True)
+env_path = Path('.') / '.env'
+load_dotenv(dotenv_path=env_path)
 
 def select_all_passwords():
     try:
-        # Connect to the local database
-        path = os.path.dirname(os.path.abspath(__file__))
-        db_file = os.path.join(path, 'users.db')
-        sqlite_connection = sqlite3.connect(db_file)
-        cursor = sqlite_connection.cursor()
-        logging.info("Connected to SQLite")
+        # Connect to SQL Server using SQL authentication
+        server = os.getenv("server")
+        database = os.getenv("database")
+        username = os.getenv("username")
+        password = os.getenv("password")
 
-        # Get table query
-        select_user = """SELECT Username, Password, Key, Result FROM users;"""
-        sqlite_select_with_param = select_user
-        # Run table query
-        cursor.execute(sqlite_select_with_param)
-        sqlite_connection.commit()
-        logging.info("Python Variables read successfully into Sqlite DB table")
-        # Fetch the data from the called queries
+        conn = pyodbc.connect(
+            f'DRIVER={{SQL Server}};SERVER={server};DATABASE={database};UID={username};PWD={password};Trusted_Connection=yes;autocommit=True;')
+        cursor = conn.cursor()
+        logging.info("Connected to SQL Server")
+
+        select_user = "SELECT Username, Password, [Key], Result FROM users;"
+        cursor.execute(select_user)
+        logging.info("Query executed successfully")
+
         db_users_all = cursor.fetchall()
-
-        # For all users info called, add to a list
-        fetched_users_all = []
-        for users in db_users_all:
-            fetched_users_all.append(users)
         cursor.close()
-        sqlite_connection.close()
-        logging.info("The SQLite connection is closed")
+        conn.close()
+        logging.info("SQL Server connection closed")
 
         # === Decrypt ===
         l_users = []
         decrypt_pw = []
-        # For each tuple in the fetched_pws list, decrypt the pw based on the key
-        for username, pw, key, results in fetched_users_all:
+        for username, pw, key, results in db_users_all:
             l_users.append(username)
             b64 = json.loads(results)
             ct = b64decode(b64['ciphertext'])
             iv = b64decode(b64['iv'])
-            # Create the cipher object and decrypt the data
             cipher_decrypt = AES.new(key, AES.MODE_CFB, iv=iv)
             dec_pw = cipher_decrypt.decrypt(ct)
             dpw = dec_pw.decode('utf-8')
             decrypt_pw.append(dpw)
-        # For every username in the l_users and decrypt_pw lists, add to the dictionary of PASSWORDS. Usernames
-        # are the keys, passwords are the values.
-        PASSWORDS = {k:v for k,v in zip(l_users, decrypt_pw)}
+
+        PASSWORDS = {k: v for k, v in zip(l_users, decrypt_pw)}
         return PASSWORDS
-    except sqlite3.Error as error:
-        logging.error("Failed to read Python variable into sqlite table", error)
+
+    except pyodbc.Error as error:
+        logging.error("Failed to read from SQL Server", exc_info=True)
+
+
 
 
 # Set the variable PASSWORDS to the dictionary returned from the select_all_passwords function.
@@ -81,7 +85,7 @@ account = sys.argv[1].lower()  # first command line arg is account name
 
 
 try:
-    # If the second argument is a key is the PASSWORDS dictionary, copy it's value, the decrypted password for the user.
+    # If the second argument is a key is the PASSWORDS dictionary, copy its value, the decrypted password for the user.
     if account in PASSWORDS:
         pyperclip.copy(PASSWORDS[account])
         print('Password for {} copied to clipboard.'.format(sys.argv[1]))
